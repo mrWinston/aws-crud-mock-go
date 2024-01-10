@@ -12,13 +12,10 @@ import (
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/organizations"
 	"github.com/aws/aws-sdk-go/service/sts"
-	"github.com/openshift/aws-account-operator/pkg/awsclient"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 
 type CrudClient struct {
-	awsclient.Client
 	LoggedInUser   *iam.User
 	AccountID      string
 	Users          []*iam.User
@@ -286,32 +283,6 @@ func (c *CrudClient) DescribeRegions(input *ec2.DescribeRegionsInput) (*ec2.Desc
 	return nil, optInErr
 }
 
-func FindIndexFunc[T any](o []T, compareFunc func(elem T) bool) int {
-	for i, v := range o {
-		if compareFunc(v) {
-			return i
-		}
-	}
-	return -1
-}
-
-func FilterFunc[T any](o []T, compareFunc func(elem T) bool) []T {
-	newArray := []T{}
-
-	for _, v := range o {
-		if compareFunc(v) {
-			newArray = append(newArray, v)
-		}
-	}
-
-	return newArray
-}
-
-func DeleteIndex[T any](o []T, idx int) []T {
-	newArray := o
-	newArray[idx] = newArray[len(newArray)-1]
-	return newArray[:len(newArray)-1]
-}
 
 // Organizations
 func (c *CrudClient) ListAccounts(input *organizations.ListAccountsInput) (*organizations.ListAccountsOutput, error) {
