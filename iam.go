@@ -1,102 +1,87 @@
-package main
+package goawscrudclient
 
 import (
 	"fmt"
 	"time"
-"github.com/aws/aws-sdk-go/aws"
+
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/aws/aws-sdk-go/service/iam/iamiface"
+	"github.com/timshannon/badgerhold/v4"
 )
 
-type IamIface interface {
-	//IAM
-	AttachRolePolicy(*iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error)
-	AttachUserPolicy(*iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error)
-	CreateAccessKey(*iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error)
-	CreatePolicy(*iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error)
-	CreateRole(*iam.CreateRoleInput) (*iam.CreateRoleOutput, error)
-	CreateUser(*iam.CreateUserInput) (*iam.CreateUserOutput, error)
-	DeleteAccessKey(*iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error)
-	DeletePolicy(input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error)
-	DeletePolicyVersion(input *iam.DeletePolicyVersionInput) (*iam.DeletePolicyVersionOutput, error)
-	DeleteRole(*iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error)
-	DeleteUser(*iam.DeleteUserInput) (*iam.DeleteUserOutput, error)
-	DeleteUserPolicy(*iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error)
-	DetachRolePolicy(*iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error)
-	DetachUserPolicy(*iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error)
-	GetPolicy(input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error)
-	GetPolicyVersion(input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error)
-	GetRole(*iam.GetRoleInput) (*iam.GetRoleOutput, error)
-	GetUser(*iam.GetUserInput) (*iam.GetUserOutput, error)
-	ListAccessKeys(*iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error)
-	ListAttachedRolePolicies(*iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error)
-	ListAttachedUserPolicies(*iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error)
-	ListPolicies(*iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error)
-	ListPolicyVersions(input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error)
-	ListRoles(input *iam.ListRolesInput) (*iam.ListRolesOutput, error)
-	ListUserPolicies(*iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error)
-	ListUserTags(*iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error)
-	ListUsers(*iam.ListUsersInput) (*iam.ListUsersOutput, error)
-	ListUsersPages(*iam.ListUsersInput, func(*iam.ListUsersOutput, bool) bool) error
-	PutUserPolicy(*iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error)
+type IamCrud struct {
+	iamiface.IAMAPI
+	Accountid string
 }
 
-type IamClient struct {
-  iamiface.IAMAPI
-	users          []*iam.User
-	userPolicyArns map[string][]string
-	// map from username to a map of policy name to policy document
-	userInlinePolicies map[string]map[string]*string
-	accessKeys         []*iam.AccessKey
-	policies           []*iam.Policy
-	policyVersions     map[string][]*iam.PolicyVersion
-	roles              []*iam.Role
-	rolePolicyArns     map[string][]string
-	accountid          string
+type RolePolicyAttachement struct {
+	RoleName  string
+	PolicyArn string
 }
 
-
-func (c *IamClient) getRoleByName(name string) *iam.Role {
-	for _, r := range c.roles {
-		if name == *r.RoleName {
-			return r
-		}
-	}
-	return nil
-}
-func (c *IamClient) getUserByName(name string) *iam.User {
-	for _, u := range c.users {
-		if name == *u.UserName {
-			return u
-		}
-	}
-	return nil
+type UserPolicyAttachement struct {
+	UserName  string
+	PolicyArn string
 }
 
-// AttachRolePolicy implements IamIface.
-func (c *IamClient) AttachRolePolicy(input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
-	role := c.getRoleByName(*input.RoleName)
-	if role == nil {
+type UserInlinePolicy struct {
+	PolicyName     string
+	PolicyDocument string
+	UserName       string
+}
+
+type PolicyVersionWrapper struct {
+	PolicyArn     string
+	PolicyVersion *iam.PolicyVersion
+}
+
+type AccessKeyWrapper struct {
+	UserName  string
+	AccessKey *iam.AccessKey
+}
+
+func (c *IamCrud) AttachRolePolicy(input *iam.AttachRolePolicyInput) (*iam.AttachRolePolicyOutput, error) {
+	role := &iam.Role{}
+	err := BH().FindOne(role, badgerhold.Where("RoleName").Eq(input.RoleName))
+	if err != nil {
 		return &iam.AttachRolePolicyOutput{}, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
-	c.rolePolicyArns[*role.Arn] = append(c.rolePolicyArns[*role.Arn], *input.PolicyArn)
+  
+  err = BH().Insert(badgerhold.NextSequence(), RolePolicyAttachement{
+		RoleName:  *input.RoleName,
+		PolicyArn: *input.PolicyArn,
+	})
+
+	if err != nil {
+		return &iam.AttachRolePolicyOutput{}, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+	}
+
 	return &iam.AttachRolePolicyOutput{}, nil
 }
 
-// AttachUserPolicy implements IamIface.
-func (c *IamClient) AttachUserPolicy(input *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
-	user := c.getUserByName(*input.UserName)
-	if user == nil {
+func (c *IamCrud) AttachUserPolicy(input *iam.AttachUserPolicyInput) (*iam.AttachUserPolicyOutput, error) {
+	user := &iam.User{}
+	err := BH().FindOne(user, badgerhold.Where("UserName").Eq(input.UserName))
+	if err != nil {
 		return &iam.AttachUserPolicyOutput{}, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+
 	}
-	c.userPolicyArns[*user.Arn] = append(c.userPolicyArns[*user.Arn], *input.PolicyArn)
+
+  err = BH().Insert(badgerhold.NextSequence(), UserPolicyAttachement{
+		UserName:  *input.UserName,
+		PolicyArn: *input.PolicyArn,
+	})
+
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+	}
 	return &iam.AttachUserPolicyOutput{}, nil
 }
 
-// CreateAccessKey implements IamIface.
-func (c *IamClient) CreateAccessKey(input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
-	cd := time.Now()
+func (c *IamCrud) CreateAccessKey(input *iam.CreateAccessKeyInput) (*iam.CreateAccessKeyOutput, error) {
+	cd := time.Now().UTC()
 	ak := &iam.AccessKey{
 		AccessKeyId:     aws.String("ACCESS_KEY"),
 		CreateDate:      &cd,
@@ -104,16 +89,25 @@ func (c *IamClient) CreateAccessKey(input *iam.CreateAccessKeyInput) (*iam.Creat
 		Status:          aws.String("Valid"),
 		UserName:        input.UserName,
 	}
-	c.accessKeys = append(c.accessKeys, ak)
+
+  err := BH().Insert(badgerhold.NextSequence(), AccessKeyWrapper{
+		UserName:  *input.UserName,
+		AccessKey: ak,
+	})
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+	}
+  
+
 	return &iam.CreateAccessKeyOutput{
 		AccessKey: ak,
 	}, nil
 }
 
-// CreatePolicy implements IamIface.
-func (c *IamClient) CreatePolicy(input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
-	cd := time.Now()
-	arn := fmt.Sprintf("arn:aws:iam::%s:policy/%s%s", c.accountid, *input.Path, *input.PolicyName)
+// TODO: Check if already exists
+func (c *IamCrud) CreatePolicy(input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
+	cd := time.Now().UTC()
+	arn := fmt.Sprintf("arn:aws:iam::%s:policy/%s%s", c.Accountid, *input.Path, *input.PolicyName)
 	pol := &iam.Policy{
 		Arn:                           &arn,
 		CreateDate:                    &cd,
@@ -128,28 +122,42 @@ func (c *IamClient) CreatePolicy(input *iam.CreatePolicyInput) (*iam.CreatePolic
 		UpdateDate:                    &cd,
 	}
 
-	c.policies = append(c.policies, pol)
+  err := BH().Insert(pol.Arn, pol)
+
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+	}
+	allStore.PutThing(pol)
 	defaultVersion := &iam.PolicyVersion{
 		CreateDate:       &cd,
 		Document:         input.PolicyDocument,
 		IsDefaultVersion: aws.Bool(true),
 		VersionId:        aws.String("v1"),
 	}
-	c.policyVersions[arn] = append(c.policyVersions[arn], defaultVersion)
+  err = BH().Insert(badgerhold.NextSequence(), PolicyVersionWrapper{
+		PolicyArn:     *pol.Arn,
+		PolicyVersion: defaultVersion,
+	})
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+	}
+
 	return &iam.CreatePolicyOutput{
 		Policy: pol,
 	}, nil
 }
 
-// CreateRole implements IamIface.
-func (c *IamClient) CreateRole(input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
+func (c *IamCrud) CreateRole(input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
 	cd := time.Now()
-	arn := fmt.Sprintf("arn:aws:iam::%s:role/%s%s", c.accountid, *input.Path, *input.RoleName)
-	if c.getRoleByName(*input.RoleName) != nil {
-		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
-	}
+	arn := fmt.Sprintf("arn:aws:iam::%s:role/%s%s", c.Accountid, *input.Path, *input.RoleName)
+  role := &iam.Role{}
+  err := BH().Get(arn, role)
 
-	pol := &iam.Role{
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+  }
+
+	newrole := &iam.Role{
 		Arn:                      &arn,
 		AssumeRolePolicyDocument: input.AssumeRolePolicyDocument,
 		CreateDate:               &cd,
@@ -166,20 +174,27 @@ func (c *IamClient) CreateRole(input *iam.CreateRoleInput) (*iam.CreateRoleOutpu
 		Tags:         input.Tags,
 	}
 
-	c.roles = append(c.roles, pol)
+  err = BH().Insert(newrole.Arn, newrole)
+
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+	}
+
 	return &iam.CreateRoleOutput{
-		Role: &iam.Role{},
+		Role: newrole,
 	}, nil
 }
 
-// CreateUser implements IamIface.
-func (c *IamClient) CreateUser(input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
+func (c *IamCrud) CreateUser(input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 	cd := time.Now()
-	arn := fmt.Sprintf("arn:aws:iam::%s:user/%s%s", c.accountid, *input.Path, *input.UserName)
-	if c.getUserByName(*input.UserName) != nil {
+	arn := fmt.Sprintf("arn:aws:iam::%s:user/%s%s", c.Accountid, *input.Path, *input.UserName)
+  user := &iam.User{}
+  err := BH().Get(arn, user)
+  if err != nil {
 		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
-	}
-	user := &iam.User{
+  }
+
+	newUser := &iam.User{
 		Arn:        &arn,
 		CreateDate: &cd,
 		Path:       input.Path,
@@ -192,308 +207,322 @@ func (c *IamClient) CreateUser(input *iam.CreateUserInput) (*iam.CreateUserOutpu
 		UserName: input.UserName,
 	}
 
+  err = BH().Insert(newUser.Arn, newUser)
+
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+	}
 	return &iam.CreateUserOutput{
-		User: user,
+		User: newUser,
 	}, nil
 }
 
-// DeleteAccessKey implements IamIface.
-func (c *IamClient) DeleteAccessKey(input *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
-	var accessKey *iam.AccessKey
-	removeIndex := -1
-
-	for i, ak := range c.accessKeys {
-		if *ak.UserName == *input.UserName && *ak.AccessKeyId == *input.AccessKeyId {
-			accessKey = ak
-			removeIndex = i
-		}
-	}
-	if accessKey == nil {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-	}
-
-	c.accessKeys[removeIndex] = c.accessKeys[len(c.accessKeys)-1]
-	c.accessKeys = c.accessKeys[:len(c.accessKeys)-1]
-
+// TODO: Determine UserName based on the person who calls it
+func (c *IamCrud) DeleteAccessKey(input *iam.DeleteAccessKeyInput) (*iam.DeleteAccessKeyOutput, error) {
+  ak := &iam.AccessKey{}
+  err := BH().DeleteMatching(ak, badgerhold.Where("UserName").Eq(input.UserName).And("AccessKeyId").Eq(input.AccessKeyId))
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+  }
 	return &iam.DeleteAccessKeyOutput{}, nil
 }
 
-// DeletePolicy implements IamIface.
-func (c *IamClient) DeletePolicy(input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
-	var policy *iam.Policy
-	removeIndex := -1
-
-	for i, pol := range c.policies {
-		if *pol.Arn == *input.PolicyArn {
-			policy = pol
-			removeIndex = i
-		}
-	}
-	if policy == nil {
+func (c *IamCrud) DeletePolicy(input *iam.DeletePolicyInput) (*iam.DeletePolicyOutput, error) {
+  policy := &iam.Policy{}
+  err := BH().Delete(input.PolicyArn, policy)
+	if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
-
-	c.policies[removeIndex] = c.policies[len(c.policies)-1]
-	c.policies = c.policies[:len(c.policies)-1]
 
 	return &iam.DeletePolicyOutput{}, nil
 }
 
-// DeletePolicyVersion implements IamIface.
-func (c *IamClient) DeletePolicyVersion(input *iam.DeletePolicyVersionInput) (*iam.DeletePolicyVersionOutput, error) {
-	polVers, ok := c.policyVersions[*input.PolicyArn]
-	if !ok {
+func (c *IamCrud) DeletePolicyVersion(input *iam.DeletePolicyVersionInput) (*iam.DeletePolicyVersionOutput, error) {
+  pvw := &PolicyVersionWrapper{}
+  err := BH().DeleteMatching(pvw, badgerhold.Where("PolicyArn").Eq(input.PolicyArn).And("PolicyVersion.VersionId").Eq(input.VersionId))
+	if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
 
-	var policyVersion *iam.PolicyVersion
-	removeIndex := -1
-
-	for i, pol := range polVers {
-		if *pol.VersionId == *input.VersionId {
-			policyVersion = pol
-			removeIndex = i
-		}
-	}
-	if policyVersion == nil {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-	}
-
-	polVers[removeIndex] = polVers[len(polVers)-1]
-	c.policyVersions[*input.PolicyArn] = polVers[:len(polVers)-1]
-
-	return &iam.DeletePolicyVersionOutput{}, nil
+  return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 }
 
-// DeleteRole implements IamIface.
-func (c *IamClient) DeleteRole(input *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
-	var role *iam.Role
-	removeIndex := -1
+func (c *IamCrud) DeleteRole(input *iam.DeleteRoleInput) (*iam.DeleteRoleOutput, error) {
+  role := &iam.Role{}
+  err := BH().DeleteMatching(role, badgerhold.Where("RoleName").Eq(input.RoleName))
 
-	for i, r := range c.roles {
-		if *r.RoleName == *input.RoleName {
-			role = r
-			removeIndex = i
-		}
-	}
-	if role == nil {
+	if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
-
-	c.roles[removeIndex] = c.roles[len(c.roles)-1]
-	c.roles = c.roles[:len(c.roles)-1]
-
 	return &iam.DeleteRoleOutput{}, nil
 }
 
-// DeleteUser implements IamIface.
-func (c *IamClient) DeleteUser(input *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
-	var user *iam.User
-	removeIndex := -1
+func (c *IamCrud) DeleteUser(input *iam.DeleteUserInput) (*iam.DeleteUserOutput, error) {
+  user := &iam.User{}
+  err := BH().DeleteMatching(user, badgerhold.Where("UserName").Eq(input.UserName))
 
-	for i, u := range c.users {
-		if *u.UserName == *input.UserName {
-			user = u
-			removeIndex = i
-		}
-	}
-	if user == nil {
+	if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
-
-	c.users[removeIndex] = c.users[len(c.users)-1]
-	c.users = c.users[:len(c.users)-1]
-
 	return &iam.DeleteUserOutput{}, nil
 }
 
-// DeleteUserPolicy implements IamIface.
-func (c *IamClient) DeleteUserPolicy(input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
-	if _, ok := c.userInlinePolicies[*input.UserName]; !ok {
+func (c *IamCrud) DeleteUserPolicy(input *iam.DeleteUserPolicyInput) (*iam.DeleteUserPolicyOutput, error) {
+  uip := &UserInlinePolicy{}
+  err := BH().DeleteMatching(uip, badgerhold.Where("UserName").Eq(input.UserName).And("PolicyName").Eq(input.PolicyName))
+	if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
 
-	delete(c.userInlinePolicies[*input.UserName], *input.PolicyName)
 	return &iam.DeleteUserPolicyOutput{}, nil
 }
 
-// DetachRolePolicy implements IamIface.
-func (c *IamClient) DetachRolePolicy(input *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
-	managedPols, ok := c.rolePolicyArns[*input.RoleName]
-	if !ok {
+func (c *IamCrud) DetachRolePolicy(input *iam.DetachRolePolicyInput) (*iam.DetachRolePolicyOutput, error) {
+  rpa := &RolePolicyAttachement{}
+  err := BH().DeleteMatching(rpa, badgerhold.Where("RoleName").Eq(input.RoleName).And("PolicyArn").Eq(input.PolicyArn))
+	if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
 
-	removeIndex := -1
-	for i, v := range managedPols {
-		if v == *input.PolicyArn {
-			removeIndex = i
-		}
-	}
-	if removeIndex == -1 {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-	}
-	managedPols[removeIndex] = managedPols[len(managedPols)-1]
-	c.rolePolicyArns[*input.RoleName] = managedPols[:len(managedPols)-1]
 	return &iam.DetachRolePolicyOutput{}, nil
 }
 
-// DetachUserPolicy implements IamIface.
-func (c *IamClient) DetachUserPolicy(input *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
-  policies, ok := c.userPolicyArns[*input.UserName]
-  if !ok {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-  }
-  if remIdx := FindIndex(policies, *input.PolicyArn); remIdx != -1 {
-    c.userPolicyArns[*input.UserName] = DeleteIndex(policies, remIdx)
-    return &iam.DetachUserPolicyOutput{}, nil
-  } else {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-  }
-}
-
-// GetPolicy implements IamIface.
-func (c *IamClient) GetPolicy(input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
-  polIdx := FindIndexFunc(c.policies, func(elem *iam.Policy) bool {
-    return *elem.Arn == *input.PolicyArn
-  })
-
-  if polIdx == -1 {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-  }
-  return &iam.GetPolicyOutput{
-  	Policy: c.policies[polIdx],
-  }, nil
-}
-
-// GetPolicyVersion implements IamIface.
-func (c *IamClient) GetPolicyVersion(input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
-  versions, ok := c.policyVersions[*input.PolicyArn]
-  if !ok {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-  }
-  versionIdx := FindIndexFunc(versions, func(elem *iam.PolicyVersion) bool {
-    return *elem.VersionId == *input.VersionId
-  })
-  if versionIdx == -1 {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-  }
-
-  return &iam.GetPolicyVersionOutput{
-  	PolicyVersion: versions[versionIdx],
-  }, nil
-}
-
-// GetRole implements IamIface.
-func (c *IamClient) GetRole(input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
-  roleIdx := FindIndexFunc(c.roles, func(elem *iam.Role) bool {
-    return *elem.RoleName == *input.RoleName
-  })
-  if roleIdx == -1 {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-  }
-  return &iam.GetRoleOutput{
-  	Role: c.roles[roleIdx],
-  },nil
-}
-
-// GetUser implements IamIface.
-func (c *IamClient) GetUser(input *iam.GetUserInput) (*iam.GetUserOutput, error) {
-  userIdx := FindIndexFunc(c.users, func(elem *iam.User) bool {
-    return *elem.UserName == *input.UserName
-  })
-  if userIdx == -1 {
-		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
-  }
-  return &iam.GetUserOutput{
-  	User: c.users[userIdx],
-  },nil
-}
-
-// ListAccessKeys implements IamIface.
-func (c *IamClient) ListAccessKeys(input *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
-  accessKeys := FilterFunc(c.accessKeys, func(elem *iam.AccessKey) bool {
-    return *elem.UserName == *input.UserName
-  })
-  metadatas := []*iam.AccessKeyMetadata{}
-  for _, ak := range accessKeys {
-    metadatas = append(metadatas, &iam.AccessKeyMetadata{
-    	AccessKeyId: ak.AccessKeyId,
-    	CreateDate:  ak.CreateDate,
-    	Status:      ak.Status,
-    	UserName:    ak.UserName,
-    })
-  }
-
-  return &iam.ListAccessKeysOutput{
-  	AccessKeyMetadata: metadatas,
-  	IsTruncated:       aws.Bool(false),
-  }, nil 
-}
-
-
-// ListAttachedRolePolicies implements IamIface.
-func (c *IamClient) ListAttachedRolePolicies(input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
-  roleIndex := FindIndexFunc(c.roles, func(elem *iam.Role) bool {
-    return *elem.RoleName == *input.RoleName
-  })
-
-  roleArn := c.roles[roleIndex].Arn
-  return &iam.ListAttachedRolePoliciesOutput{
-  	AttachedPolicies: []*iam.AttachedPolicy{{
-  		PolicyArn:  roleArn,
-  		PolicyName: new(string),
-  	}},
-  	IsTruncated:      new(bool),
-  	Marker:           new(string),
-  }, nil
-}
-
-// ListAttachedUserPolicies implements IamIface.
-func (*IamClient) ListAttachedUserPolicies(*iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
-	panic("unimplemented")
-}
-
-// ListPolicies implements IamIface.
-func (*IamClient) ListPolicies(*iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
-	panic("unimplemented")
-}
-
-// ListPolicyVersions implements IamIface.
-func (*IamClient) ListPolicyVersions(input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
-	panic("unimplemented")
-}
-
-// ListRoles implements IamIface.
-func (*IamClient) ListRoles(input *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
-	panic("unimplemented")
-}
-
-// ListUserPolicies implements IamIface.
-func (*IamClient) ListUserPolicies(*iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
-	panic("unimplemented")
-}
-
-// ListUserTags implements IamIface.
-func (*IamClient) ListUserTags(*iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
-	panic("unimplemented")
-}
-
-// ListUsers implements IamIface.
-func (*IamClient) ListUsers(*iam.ListUsersInput) (*iam.ListUsersOutput, error) {
-	panic("unimplemented")
-}
-
-// ListUsersPages implements IamIface.
-func (*IamClient) ListUsersPages(*iam.ListUsersInput, func(*iam.ListUsersOutput, bool) bool) error {
-	panic("unimplemented")
-}
-
-// PutUserPolicy implements IamIface.
-func (c *IamClient) PutUserPolicy(input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
-	if _, ok := c.userInlinePolicies[*input.UserName]; !ok {
+func (c *IamCrud) DetachUserPolicy(input *iam.DetachUserPolicyInput) (*iam.DetachUserPolicyOutput, error) {
+  upa := &UserPolicyAttachement{}
+  err := BH().DeleteMatching(upa, badgerhold.Where("UserName").Eq(input.UserName).And("PolicyArn").Eq(input.PolicyArn))
+	if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
 	}
-	c.userInlinePolicies[*input.UserName][*input.PolicyName] = input.PolicyDocument
+
+	return &iam.DetachUserPolicyOutput{}, nil
+}
+
+func (c *IamCrud) GetPolicy(input *iam.GetPolicyInput) (*iam.GetPolicyOutput, error) {
+  policy := &iam.Policy{}
+  err := BH().Get(input.PolicyArn, policy)
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+	return &iam.GetPolicyOutput{
+		Policy: policy,
+	}, nil
+}
+
+func (c *IamCrud) GetPolicyVersion(input *iam.GetPolicyVersionInput) (*iam.GetPolicyVersionOutput, error) {
+  pvw := &PolicyVersionWrapper{}
+
+  err := BH().FindOne(pvw, badgerhold.Where("PolicyArn").Eq(input.PolicyArn).And("PolicyVersion.VersionId").Eq(input.VersionId))
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+
+	return &iam.GetPolicyVersionOutput{
+		PolicyVersion: pvw.PolicyVersion,
+	}, nil
+}
+
+func (c *IamCrud) GetRole(input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
+
+
+	role := &iam.Role{}
+  err := BH().FindOne(role, badgerhold.Where("RoleName").Eq(input.RoleName))
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+	}
+	return &iam.GetRoleOutput{
+		Role: role,
+	}, nil
+}
+
+func (c *IamCrud) GetUser(input *iam.GetUserInput) (*iam.GetUserOutput, error) {
+	user := &iam.User{}
+  err := BH().FindOne(user, badgerhold.Where("UserName").Eq(input.UserName))
+	if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+	}
+	return &iam.GetUserOutput{
+		User: user,
+	}, nil
+}
+
+func (c *IamCrud) ListAccessKeys(input *iam.ListAccessKeysInput) (*iam.ListAccessKeysOutput, error) {
+
+  accessKeys := []AccessKeyWrapper{} 
+  err := BH().Find(&accessKeys, badgerhold.Where("UserName").Eq(input.UserName))
+
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+
+	metadatas := []*iam.AccessKeyMetadata{}
+
+	for _, el := range accessKeys {
+		ak := el.AccessKey
+		metadatas = append(metadatas, &iam.AccessKeyMetadata{
+			AccessKeyId: ak.AccessKeyId,
+			CreateDate:  ak.CreateDate,
+			Status:      ak.Status,
+			UserName:    ak.UserName,
+		})
+	}
+
+	return &iam.ListAccessKeysOutput{
+		AccessKeyMetadata: metadatas,
+		IsTruncated:       aws.Bool(false),
+	}, nil
+}
+
+func (c *IamCrud) ListAttachedRolePolicies(input *iam.ListAttachedRolePoliciesInput) (*iam.ListAttachedRolePoliciesOutput, error) {
+
+  rpas := []RolePolicyAttachement{}
+  err := BH().Find(&rpas, badgerhold.Where("RoleName").Eq(input.RoleName))
+
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+
+	attachedPolicies := []*iam.AttachedPolicy{}
+	for _, pw := range rpas {
+		attachedPolicies = append(attachedPolicies, &iam.AttachedPolicy{
+			PolicyArn:  &pw.PolicyArn,
+			PolicyName: new(string),
+		})
+	}
+
+	return &iam.ListAttachedRolePoliciesOutput{
+		AttachedPolicies: attachedPolicies,
+		IsTruncated:      new(bool),
+		Marker:           new(string),
+	}, nil
+}
+
+func (c *IamCrud) ListAttachedUserPolicies(input *iam.ListAttachedUserPoliciesInput) (*iam.ListAttachedUserPoliciesOutput, error) {
+  upas := []UserPolicyAttachement{}
+  err := BH().Find(&upas, badgerhold.Where("UserName").Eq(input.UserName))
+
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+
+	attachedPolicies := []*iam.AttachedPolicy{}
+	for _, pw := range upas {
+		attachedPolicies = append(attachedPolicies, &iam.AttachedPolicy{
+			PolicyArn:  &pw.PolicyArn,
+			PolicyName: new(string),
+		})
+	}
+
+	return &iam.ListAttachedUserPoliciesOutput{
+		AttachedPolicies: attachedPolicies,
+		IsTruncated:      new(bool),
+		Marker:           new(string),
+	}, nil
+}
+
+// TODO: Support some filter
+func (c *IamCrud) ListPolicies(input *iam.ListPoliciesInput) (*iam.ListPoliciesOutput, error) {
+  policies := []*iam.Policy{}
+  err := BH().Find(&policies, nil)
+
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+
+	return &iam.ListPoliciesOutput{
+		IsTruncated: aws.Bool(false),
+		Policies:    policies,
+	}, nil
+
+}
+
+func (c *IamCrud) ListPolicyVersions(input *iam.ListPolicyVersionsInput) (*iam.ListPolicyVersionsOutput, error) {
+  pvws := []PolicyVersionWrapper{}
+  err := BH().Find(&pvws, badgerhold.Where("PolicyAnr").Eq(input.PolicyArn))
+
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+	versions := make([]*iam.PolicyVersion, len(pvws))
+
+	for i, pw := range pvws {
+		versions[i] = pw.PolicyVersion
+	}
+
+	return &iam.ListPolicyVersionsOutput{
+		IsTruncated: aws.Bool(false),
+		Versions:    versions,
+	}, nil
+}
+
+// TODO: Support some filter
+func (c *IamCrud) ListRoles(input *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
+
+  roles := []*iam.Role{}
+  err := BH().Find(roles, nil)
+
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+
+	return &iam.ListRolesOutput{
+		IsTruncated: aws.Bool(false),
+		Roles:       roles,
+	}, nil
+
+}
+
+func (c *IamCrud) ListUserPolicies(input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
+  uips := []UserInlinePolicy{}
+
+  err := BH().Find(uips, badgerhold.Where("UserName").Eq(input.UserName))
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
+  }
+
+	policyNames := make([]*string, len(uips))
+
+	for i, pw := range uips {
+		policyNames[i] = &pw.PolicyName
+	}
+	return &iam.ListUserPoliciesOutput{
+		PolicyNames: policyNames,
+	}, nil
+}
+
+func (c *IamCrud) ListUserTags(input *iam.ListUserTagsInput) (*iam.ListUserTagsOutput, error) {
+	panic("Not Implemented")
+}
+
+func (c *IamCrud) ListUsers(input *iam.ListUsersInput) (*iam.ListUsersOutput, error) {
+	panic("Not Implemented")
+}
+
+func (c *IamCrud) ListUsersPages(input *iam.ListUsersInput, fn func(*iam.ListUsersOutput, bool) bool) error {
+  users := []*iam.User{}
+  err := BH().Find(users, nil)
+  if err != nil {
+    return err
+  }
+
+	fn(&iam.ListUsersOutput{
+		IsTruncated: aws.Bool(false),
+		Users:       users,
+	}, false)
+	return nil
+}
+
+func (c *IamCrud) PutUserPolicy(input *iam.PutUserPolicyInput) (*iam.PutUserPolicyOutput, error) {
+
+
+  err := BH().Insert(badgerhold.NextSequence(), UserInlinePolicy{
+		PolicyName:     *input.PolicyName,
+		PolicyDocument: *input.PolicyDocument,
+		UserName:       *input.UserName,
+	})
+
+  if err != nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+  }
+
 	return &iam.PutUserPolicyOutput{}, nil
 }

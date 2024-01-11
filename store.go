@@ -1,11 +1,29 @@
-package service
+package goawscrudclient
 
 import (
+	"fmt"
 	"reflect"
 
 	"github.com/aws/aws-sdk-go/service/iam"
 	"github.com/google/go-cmp/cmp"
+	"github.com/timshannon/badgerhold/v4"
 )
+
+var bh *badgerhold.Store
+
+func BH() *badgerhold.Store {
+  if bh == nil {
+    bhOpts := badgerhold.DefaultOptions
+    bhOpts.Options.InMemory = true
+    var err error
+    bh, err = badgerhold.Open(bhOpts)
+    if err != nil {
+      panic(fmt.Sprintf("Got an error initializing badger: %v", err))
+    }
+  }
+
+  return bh
+}
 
 type CrudClientStore struct {
 	Users                []*iam.User
