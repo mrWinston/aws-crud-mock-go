@@ -359,7 +359,11 @@ func (c *Ec2Crud) RunInstances(input *ec2.RunInstancesInput) (*ec2.Reservation, 
 	}
 
 	subnet := ec2.Subnet{}
+  if input.SubnetId == nil {
+    
+  }
 	err := BH().Get(input.SubnetId, &subnet)
+
 	if err != nil {
 		return nil, err
 	}

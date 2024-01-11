@@ -13,7 +13,8 @@ import (
 
 type IamCrud struct {
 	iamiface.IAMAPI
-	Accountid string
+	AccountId string
+  AccessKeyId string
 }
 
 type RolePolicyAttachement struct {
@@ -107,7 +108,7 @@ func (c *IamCrud) CreateAccessKey(input *iam.CreateAccessKeyInput) (*iam.CreateA
 // TODO: Check if already exists
 func (c *IamCrud) CreatePolicy(input *iam.CreatePolicyInput) (*iam.CreatePolicyOutput, error) {
 	cd := time.Now().UTC()
-	arn := fmt.Sprintf("arn:aws:iam::%s:policy/%s%s", c.Accountid, *input.Path, *input.PolicyName)
+	arn := fmt.Sprintf("arn:aws:iam::%s:policy/%s%s", c.AccountId, *input.Path, *input.PolicyName)
 	pol := &iam.Policy{
 		Arn:                           &arn,
 		CreateDate:                    &cd,
@@ -149,12 +150,18 @@ func (c *IamCrud) CreatePolicy(input *iam.CreatePolicyInput) (*iam.CreatePolicyO
 
 func (c *IamCrud) CreateRole(input *iam.CreateRoleInput) (*iam.CreateRoleOutput, error) {
 	cd := time.Now()
-	arn := fmt.Sprintf("arn:aws:iam::%s:role/%s%s", c.Accountid, *input.Path, *input.RoleName)
+  path := ""
+  if input.Path == nil {
+    path = "/"
+  } else {
+    path = *input.Path
+  }
+	arn := fmt.Sprintf("arn:aws:iam::%s:role/%s%s", c.AccountId, path, *input.RoleName)
   role := &iam.Role{}
   err := BH().Get(arn, role)
 
-  if err != nil {
-		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+  if err == nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", err)
   }
 
 	newrole := &iam.Role{
@@ -177,7 +184,7 @@ func (c *IamCrud) CreateRole(input *iam.CreateRoleInput) (*iam.CreateRoleOutput,
   err = BH().Insert(newrole.Arn, newrole)
 
 	if err != nil {
-		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", err)
 	}
 
 	return &iam.CreateRoleOutput{
@@ -187,11 +194,17 @@ func (c *IamCrud) CreateRole(input *iam.CreateRoleInput) (*iam.CreateRoleOutput,
 
 func (c *IamCrud) CreateUser(input *iam.CreateUserInput) (*iam.CreateUserOutput, error) {
 	cd := time.Now()
-	arn := fmt.Sprintf("arn:aws:iam::%s:user/%s%s", c.Accountid, *input.Path, *input.UserName)
+  path := ""
+  if input.Path == nil {
+    path = "/"
+  } else {
+    path = *input.Path
+  }
+	arn := fmt.Sprintf("arn:aws:iam::%s:user/%s%s", c.AccountId, path, *input.UserName)
   user := &iam.User{}
   err := BH().Get(arn, user)
-  if err != nil {
-		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", nil)
+  if err == nil {
+		return nil, awserr.New(iam.ErrCodeInvalidInputException, "", err)
   }
 
 	newUser := &iam.User{
@@ -335,6 +348,35 @@ func (c *IamCrud) GetRole(input *iam.GetRoleInput) (*iam.GetRoleOutput, error) {
 }
 
 func (c *IamCrud) GetUser(input *iam.GetUserInput) (*iam.GetUserOutput, error) {
+  if input.UserName == nil{
+    // we want to get the currently logged in user, check if we have it
+    akwrapper := AccessKeyWrapper{}
+    err := BH().FindOne(&akwrapper, badgerhold.Where("AccessKey.AccessKeyId").Eq(c.AccessKeyId))
+    if err != nil {
+      // it doesn't exist yet
+      cuo, err := c.CreateUser(&iam.CreateUserInput{
+      	Path:                aws.String("/"),
+      	UserName:            aws.String("defaultUser"),
+      })
+      if err != nil {
+        return nil, err
+      }
+      err = BH().Insert(badgerhold.NextSequence(), AccessKeyWrapper{
+      	UserName:  *cuo.User.UserName,
+      	AccessKey: &iam.AccessKey{
+      		AccessKeyId:     &c.AccessKeyId,
+      		CreateDate:      aws.Time(time.Now().UTC()),
+      		SecretAccessKey: aws.String("secret"),
+      		Status:          aws.String(iam.StatusTypeActive),
+      		UserName:        cuo.User.UserName,
+      	},
+      })
+      if err != nil {
+        return nil, err
+      }
+    } 
+    input.UserName = aws.String("defaultUser")
+  } 
 	user := &iam.User{}
   err := BH().FindOne(user, badgerhold.Where("UserName").Eq(input.UserName))
 	if err != nil {
@@ -458,7 +500,7 @@ func (c *IamCrud) ListPolicyVersions(input *iam.ListPolicyVersionsInput) (*iam.L
 func (c *IamCrud) ListRoles(input *iam.ListRolesInput) (*iam.ListRolesOutput, error) {
 
   roles := []*iam.Role{}
-  err := BH().Find(roles, nil)
+  err := BH().Find(&roles, nil)
 
   if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
@@ -474,7 +516,7 @@ func (c *IamCrud) ListRoles(input *iam.ListRolesInput) (*iam.ListRolesOutput, er
 func (c *IamCrud) ListUserPolicies(input *iam.ListUserPoliciesInput) (*iam.ListUserPoliciesOutput, error) {
   uips := []UserInlinePolicy{}
 
-  err := BH().Find(uips, badgerhold.Where("UserName").Eq(input.UserName))
+  err := BH().Find(&uips, badgerhold.Where("UserName").Eq(input.UserName))
   if err != nil {
 		return nil, awserr.New(iam.ErrCodeNoSuchEntityException, "", nil)
   }
@@ -499,7 +541,7 @@ func (c *IamCrud) ListUsers(input *iam.ListUsersInput) (*iam.ListUsersOutput, er
 
 func (c *IamCrud) ListUsersPages(input *iam.ListUsersInput, fn func(*iam.ListUsersOutput, bool) bool) error {
   users := []*iam.User{}
-  err := BH().Find(users, nil)
+  err := BH().Find(&users, nil)
   if err != nil {
     return err
   }

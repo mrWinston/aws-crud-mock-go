@@ -16,12 +16,13 @@ import (
 type OrganizationsCrud struct {
 	organizationsiface.OrganizationsAPI
 	Accountid string
+  RootOUId string
 }
 
 // Organizations
 func (c *OrganizationsCrud) ListAccounts(input *organizations.ListAccountsInput) (*organizations.ListAccountsOutput, error) {
 	accounts := []*organizations.Account{}
-	err := BH().Find(accounts, nil)
+	err := BH().Find(&accounts, nil)
 
 	if err != nil {
 		return nil, awserr.New(organizations.ErrCodeInvalidInputException, "", nil)
@@ -53,7 +54,18 @@ func (c *OrganizationsCrud) CreateAccount(input *organizations.CreateAccountInpu
 		Name:            input.AccountName,
 		Status:          aws.String("ACTIVE"),
 	}
-	_ = BH().Insert(acc.Id, acc)
+
+
+  err := BH().Insert(acc.Id, acc)
+
+  BH().Insert(badgerhold.NextSequence(), TreeMapper{
+  	Parent: c.RootOUId,
+  	Child:  accountId,
+  })
+
+  if err != nil {
+    return nil, err
+  }
 
 	cao := &organizations.CreateAccountOutput{
 		CreateAccountStatus: &organizations.CreateAccountStatus{
@@ -173,7 +185,7 @@ func (c *OrganizationsCrud) ListChildren(input *organizations.ListChildrenInput)
 	children := []*organizations.Child{}
 
 	treeMappers := []TreeMapper{}
-	err := BH().Find(treeMappers, badgerhold.Where("Parent").Eq(input.ParentId))
+	err := BH().Find(&treeMappers, badgerhold.Where("Parent").Eq(input.ParentId))
 	if err != nil {
 		return nil, awserr.New(organizations.ErrCodeInvalidInputException, "", err)
 	}
