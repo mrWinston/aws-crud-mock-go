@@ -24,8 +24,6 @@ func Test_ListTagsForResource(t *testing.T) {
     }},
   })
 
-  t.Errorf("accid: %s", *cao.CreateAccountStatus.AccountId)
-
   if err != nil {
     t.Errorf("Error creating acc: %v", err)
   }

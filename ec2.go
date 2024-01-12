@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/service/ec2"
 	"github.com/aws/aws-sdk-go/service/ec2/ec2iface"
 	"github.com/timshannon/badgerhold/v4"
@@ -69,10 +70,40 @@ func NewRandomId() string {
 	return fmt.Sprintf("%d", num)
 }
 
+type VpcWrapper struct {
+	Arn string
+	Vpc *ec2.Vpc
+}
+
+func GenerateEc2Arn(accountID *string, region *string, resource *string, id *string) string {
+	accValue := ""
+	if accountID != nil {
+		accValue = *accountID
+	}
+
+	resourceValue := ""
+	if resource != nil {
+		resourceValue = *resource
+	}
+
+	regionValue := ""
+	if region != nil {
+		regionValue = *region
+	}
+
+	nameValue := ""
+	if id != nil {
+		nameValue = *id
+	}
+
+	return fmt.Sprintf("arn:aws:iam:%s:%s:%s/%s", regionValue, accValue, resourceValue, nameValue)
+}
+
 func (c *Ec2Crud) CreateVpc(input *ec2.CreateVpcInput) (*ec2.CreateVpcOutput, error) {
 	stateAvail := ec2.VpcStateAvailable
 
 	id := NewVpcId()
+	arn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("vpc"), &id)
 
 	tags := []*ec2.Tag{}
 	for _, ts := range input.TagSpecifications {
@@ -98,7 +129,10 @@ func (c *Ec2Crud) CreateVpc(input *ec2.CreateVpcInput) (*ec2.CreateVpcOutput, er
 		VpcId:                   &id,
 	}
 
-	err := BH().Insert(id, newVpc)
+	err := BH().Insert(arn, VpcWrapper{
+		Arn: arn,
+		Vpc: newVpc,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +150,7 @@ func (c *Ec2Crud) CreateSubnet(input *ec2.CreateSubnetInput) (*ec2.CreateSubnetO
 	}
 
 	id := NewSubnetId()
-	subnetArn := NewSubnetArn(c.Region, c.AccountId, id)
+	subnetArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("subnet"), &id)
 	subnet := &ec2.Subnet{
 		AvailabilityZone:        input.AvailabilityZone,
 		AvailabilityZoneId:      input.AvailabilityZoneId,
@@ -133,7 +167,7 @@ func (c *Ec2Crud) CreateSubnet(input *ec2.CreateSubnetInput) (*ec2.CreateSubnetO
 		VpcId:                   input.VpcId,
 	}
 
-	err := BH().Insert(id, subnet)
+	err := BH().Insert(subnetArn, subnet)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +182,8 @@ func (c *Ec2Crud) DeleteSnapshot(input *ec2.DeleteSnapshotInput) (*ec2.DeleteSna
 }
 func (c *Ec2Crud) DeleteSubnet(input *ec2.DeleteSubnetInput) (*ec2.DeleteSubnetOutput, error) {
 	snet := &ec2.Subnet{}
-	err := BH().Get(input.SubnetId, snet)
+	subnetArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("subnet"), input.SubnetId)
+	err := BH().Get(subnetArn, snet)
 	if err != nil {
 		return nil, err
 	}
@@ -159,14 +194,17 @@ func (c *Ec2Crud) DeleteVolume(input *ec2.DeleteVolumeInput) (*ec2.DeleteVolumeO
 	return &ec2.DeleteVolumeOutput{}, nil
 }
 func (c *Ec2Crud) DeleteVpc(input *ec2.DeleteVpcInput) (*ec2.DeleteVpcOutput, error) {
-	vpc := &ec2.Vpc{}
-	err := BH().Delete(input.VpcId, vpc)
+	vpcWrapper := VpcWrapper{}
+	vpcArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("vpc"), input.VpcId)
+	err := BH().Delete(vpcArn, vpcWrapper)
 	return &ec2.DeleteVpcOutput{}, err
 }
 
 func (c *Ec2Crud) DeleteVpcEndpointServiceConfigurations(input *ec2.DeleteVpcEndpointServiceConfigurationsInput) (*ec2.DeleteVpcEndpointServiceConfigurationsOutput, error) {
 	return &ec2.DeleteVpcEndpointServiceConfigurationsOutput{}, nil
 }
+
+
 func (c *Ec2Crud) DescribeImages(input *ec2.DescribeImagesInput) (*ec2.DescribeImagesOutput, error) {
 	amis := []*ec2.Image{}
 	err := BH().Find(&amis, nil)
@@ -174,17 +212,35 @@ func (c *Ec2Crud) DescribeImages(input *ec2.DescribeImagesInput) (*ec2.DescribeI
 		return nil, err
 	}
 	return &ec2.DescribeImagesOutput{
-		Images: amis,
+		Images: []*ec2.Image{{
+			Architecture:        aws.String("x86_64"),
+			ImageId:             aws.String("im-12345"),
+			Name:                aws.String("RHEL"),
+		}},
 	}, nil
 }
+
+type InstanceWrapper struct {
+	Arn      string
+	Instance *ec2.Instance
+}
+
 func (c *Ec2Crud) DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput) (*ec2.DescribeInstanceStatusOutput, error) {
-	instances := []*ec2.Instance{}
-	instanceIdsBadger := []interface{}{}
-	for _, v := range input.InstanceIds {
-		instanceIdsBadger = append(instanceIdsBadger, v)
+	instances := []InstanceWrapper{}
+	var err error
+	if len(input.InstanceIds) > 0 {
+		instanceArns := []interface{}{}
+		for _, v := range input.InstanceIds {
+			curArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("instance"), v)
+			instanceArns = append(instanceArns, curArn)
+		}
+		err = BH().Find(&instances, badgerhold.Where(badgerhold.Key).In(instanceArns...))
+	} else {
+		// just use all instances in this region & account
+		arn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("instance"), nil)
+		err = BH().Find(&instances, badgerhold.Where(badgerhold.Key).HasPrefix(arn))
 	}
 
-	err := BH().Find(&instances, badgerhold.Where("InstanceId").In(instanceIdsBadger...))
 	if err != nil {
 		return nil, err
 	}
@@ -193,14 +249,14 @@ func (c *Ec2Crud) DescribeInstanceStatus(input *ec2.DescribeInstanceStatusInput)
 
 	for _, v := range instances {
 		instanceStatuses = append(instanceStatuses, &ec2.InstanceStatus{
-			AvailabilityZone: v.SubnetId,
+			AvailabilityZone: v.Instance.SubnetId,
 			Events:           []*ec2.InstanceStatusEvent{},
-			InstanceId:       v.InstanceId,
-			InstanceState:    v.State,
+			InstanceId:       v.Instance.InstanceId,
+			InstanceState:    v.Instance.State,
 			InstanceStatus: &ec2.InstanceStatusSummary{
 				Status: aws.String("ok"),
 			},
-			OutpostArn: v.OutpostArn,
+			OutpostArn: v.Instance.OutpostArn,
 		})
 	}
 
@@ -236,13 +292,21 @@ func (c *Ec2Crud) DescribeInstanceTypes(input *ec2.DescribeInstanceTypesInput) (
 }
 
 func (c *Ec2Crud) DescribeInstances(input *ec2.DescribeInstancesInput) (*ec2.DescribeInstancesOutput, error) {
-	instanceIdsBadger := []interface{}{}
 
-	for _, v := range input.InstanceIds {
-		instanceIdsBadger = append(instanceIdsBadger, v)
+	instances := []InstanceWrapper{}
+	var err error
+	if len(input.InstanceIds) > 0 {
+		instanceArns := []interface{}{}
+		for _, v := range input.InstanceIds {
+			curArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("instance"), v)
+			instanceArns = append(instanceArns, curArn)
+		}
+		err = BH().Find(&instances, badgerhold.Where(badgerhold.Key).In(instanceArns...))
+	} else {
+		// just use all instances in this region & account
+		arn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("instance"), nil)
+		err = BH().Find(&instances, badgerhold.Where(badgerhold.Key).HasPrefix(arn))
 	}
-	instances := []*ec2.Instance{}
-	err := BH().Find(&instances, badgerhold.Where("InstanceId").In(instanceIdsBadger...))
 
 	if err != nil {
 		return nil, err
@@ -251,7 +315,7 @@ func (c *Ec2Crud) DescribeInstances(input *ec2.DescribeInstancesInput) (*ec2.Des
 	reservations := []*ec2.Reservation{}
 	for _, i2 := range instances {
 		reservations = append(reservations, &ec2.Reservation{
-			Instances:     []*ec2.Instance{i2},
+			Instances:     []*ec2.Instance{i2.Instance},
 			OwnerId:       &c.AccountId,
 			ReservationId: aws.String(fmt.Sprintf("r-%s", NewRandomId())),
 		})
@@ -286,16 +350,18 @@ func (c *Ec2Crud) DescribeSubnets(input *ec2.DescribeSubnetsInput) (*ec2.Describ
 	subnets := []*ec2.Subnet{}
 
 	if len(input.SubnetIds) >= 0 {
-		subnetIdsBadger := []interface{}{}
+		subnetArnsBadger := []interface{}{}
 		for _, v := range input.SubnetIds {
-			subnetIdsBadger = append(subnetIdsBadger, v)
+			curArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("subnet"), v)
+			subnetArnsBadger = append(subnetArnsBadger, curArn)
 		}
-		err := BH().Find(&subnets, badgerhold.Where("SubnetId").In(subnetIdsBadger...))
+		err := BH().Find(&subnets, badgerhold.Where(badgerhold.Key).In(subnetArnsBadger...))
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := BH().Find(&subnets, nil)
+		curArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("subnet"), nil)
+		err := BH().Find(&subnets, badgerhold.Where(badgerhold.Key).HasPrefix(curArn))
 		if err != nil {
 			return nil, err
 		}
@@ -319,22 +385,29 @@ func (c *Ec2Crud) DescribeVpcEndpointServiceConfigurations(input *ec2.DescribeVp
 }
 
 func (c *Ec2Crud) DescribeVpcs(input *ec2.DescribeVpcsInput) (*ec2.DescribeVpcsOutput, error) {
-	vpcs := []*ec2.Vpc{}
+	vpcWrappers := []VpcWrapper{}
 
 	if len(input.VpcIds) >= 0 {
-		vpcIdsBadger := []interface{}{}
+		vpcArnsBadger := []interface{}{}
 		for _, v := range input.VpcIds {
-			vpcIdsBadger = append(vpcIdsBadger, v)
+			curArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("vpc"), v)
+			vpcArnsBadger = append(vpcArnsBadger, curArn)
 		}
-		err := BH().Find(&vpcs, badgerhold.Where("VpcId").In(vpcIdsBadger...))
+		err := BH().Find(&vpcWrappers, badgerhold.Where(badgerhold.Key).In(vpcArnsBadger...))
 		if err != nil {
 			return nil, err
 		}
 	} else {
-		err := BH().Find(&vpcs, nil)
+		curArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("vpc"), nil)
+		err := BH().Find(&vpcWrappers, badgerhold.Where(badgerhold.Key).HasPrefix(curArn))
 		if err != nil {
 			return nil, err
 		}
+	}
+
+	vpcs := []*ec2.Vpc{}
+	for _, vw := range vpcWrappers {
+		vpcs = append(vpcs, vw.Vpc)
 	}
 
 	return &ec2.DescribeVpcsOutput{
@@ -359,13 +432,11 @@ func (c *Ec2Crud) RunInstances(input *ec2.RunInstancesInput) (*ec2.Reservation, 
 	}
 
 	subnet := ec2.Subnet{}
-  if input.SubnetId == nil {
-    
-  }
-	err := BH().Get(input.SubnetId, &subnet)
+	snetArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("subnet"), input.SubnetId)
+	err := BH().FindOne(&subnet, badgerhold.Where(badgerhold.Key).HasPrefix(snetArn))
 
 	if err != nil {
-		return nil, err
+    return &ec2.Reservation{}, awserr.New("GenericBadgerError", snetArn, err)
 	}
 
 	newInstance := &ec2.Instance{
@@ -386,14 +457,19 @@ func (c *Ec2Crud) RunInstances(input *ec2.RunInstancesInput) (*ec2.Reservation, 
 			Code: aws.Int64(16),
 			Name: aws.String(ec2.InstanceStateNameRunning),
 		},
-		SubnetId: input.SubnetId,
+		SubnetId: subnet.SubnetId,
 		Tags:     tags,
 		VpcId:    subnet.VpcId,
 	}
 
-	err = BH().Insert(instanceId, newInstance)
+	instanceArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("instance"), &instanceId)
+
+	err = BH().Insert(instanceArn, InstanceWrapper{
+		Arn:      instanceArn,
+		Instance: newInstance,
+	})
 	if err != nil {
-		return nil, err
+    return &ec2.Reservation{}, awserr.New("GenericBadgerError", "", err)
 	}
 	return &ec2.Reservation{
 		Instances:     []*ec2.Instance{newInstance},
@@ -408,20 +484,24 @@ func (c *Ec2Crud) TerminateInstances(input *ec2.TerminateInstancesInput) (*ec2.T
 
 	for _, v := range input.InstanceIds {
 		newStateChange := &ec2.InstanceStateChange{
-			InstanceId:    aws.String(*v),
+			InstanceId: aws.String(*v),
 		}
-		curInstance := ec2.Instance{}
-		err := BH().Get(v, &curInstance)
+		curInstance := InstanceWrapper{}
+    curInstanceArn := GenerateEc2Arn(&c.AccountId, &c.Region, aws.String("instance"), v)
+		err := BH().Get(curInstanceArn, &curInstance)
 		if err != nil {
 			return nil, err
 		}
-    newStateChange.CurrentState = curInstance.State
-    curInstance.State  = &ec2.InstanceState{
-      Name: aws.String(ec2.InstanceStateNameShuttingDown),
-      Code: aws.Int64(32),
+		newStateChange.CurrentState = curInstance.Instance.State
+		curInstance.Instance.State = &ec2.InstanceState{
+			Name: aws.String(ec2.InstanceStateNameShuttingDown),
+			Code: aws.Int64(32),
+		}
+		newStateChange.CurrentState = curInstance.Instance.State
+    err = BH().Update(curInstanceArn, curInstance)
+    if err != nil {
+      return nil, err
     }
-    newStateChange.CurrentState = curInstance.State
-		BH().Update(v, curInstance)
 	}
 
 	return &ec2.TerminateInstancesOutput{

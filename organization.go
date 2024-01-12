@@ -58,7 +58,11 @@ func (c *OrganizationsCrud) CreateAccount(input *organizations.CreateAccountInpu
 
   err := BH().Insert(acc.Id, acc)
 
-  BH().Insert(badgerhold.NextSequence(), TreeMapper{
+  if err != nil {
+    return nil, err
+  }
+
+  err = BH().Insert(badgerhold.NextSequence(), TreeMapper{
   	Parent: c.RootOUId,
   	Child:  accountId,
   })
@@ -278,6 +282,9 @@ func (c *OrganizationsCrud) ListTagsForResource(input *organizations.ListTagsFor
 
   tags := []*organizations.Tag{}
   for _, t := range tm {
+    if t.Tag.Value == nil {
+      t.Tag.Value = aws.String("")
+    }
     tags = append(tags, t.Tag)
   } 
   

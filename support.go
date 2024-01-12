@@ -10,6 +10,7 @@ import (
 	"github.com/timshannon/badgerhold/v4"
 )
 
+// TODO Nothing is regional or bound to an account
 type SupportCrud struct {
   supportiface.SupportAPI
 }
